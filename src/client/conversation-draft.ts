@@ -15,13 +15,21 @@
  *
  * Insert position (fixes upstream issue #425): the draft store only exposes
  * the whole string (`getSnapshot().draft` + `setDraft(text)`) — there is no
- * caret API on the conversation service. The composer's `<textarea>` keeps
- * its last selection even while unfocused, so the live caret is probed from
- * the DOM (guarded by a value-sync check), and the text is spliced at that
- * position, replacing any live selection — with whitespace-aware joins, an
- * insert into the middle of a sentence keeps single-space separation like
- * the append path. An unknown/stale caret falls back to appending at the
- * end (the pre-fix behavior).
+ * caret API on the conversation service. The composer keeps its last
+ * selection even while unfocused, so the live caret is probed from the DOM
+ * (guarded by a value-sync check), and the text is spliced at that position,
+ * replacing any live selection — with whitespace-aware joins, an insert into
+ * the middle of a sentence keeps single-space separation like the append
+ * path. An unknown/stale caret falls back to appending at the end (the
+ * pre-fix behavior).
+ *
+ * The composer element is read in both host generations: today's
+ * `[data-composer-input]` contenteditable (its DOM selection is the caret,
+ * and its text is the draft while no reference chip is in it) and the older
+ * `textarea[data-phase]`. A host that renders neither yields no caret, never
+ * a textarea from elsewhere in the conversation column — that would hand the
+ * caret to an unrelated control (a question card's answer box, a queued
+ * message's editor).
  *
  * The caret is also *restored* after the insert: committing a programmatic
  * draft change resets the controlled textarea's caret (observed landing at
@@ -84,20 +92,61 @@ export function insertAtCaret(draft: string, text: string, caret: DraftCaret | n
   return spliceInsert(draft, text, caret).draft
 }
 
+/** The composer's editable element: the current contenteditable, or the older textarea. */
+type ComposerElement = HTMLElement | HTMLTextAreaElement
+
 /**
- * Locate the composer `<textarea>` in the conversation column: prefer the
- * `data-phase`-tagged textarea (the composer's marker), falling back to any
- * textarea in the column, then to a bare data-phase textarea (older host
- * layouts without the column attribute). Null in jsdom-less hosts.
+ * Locate the composer's editable element: the current host's
+ * `[data-composer-input]` contenteditable when it is mounted, otherwise the
+ * older `data-phase`-tagged textarea. Null in jsdom-less hosts and on hosts
+ * that render neither.
  */
-function findComposerTextarea(): HTMLTextAreaElement | null {
+function findComposerElement(): ComposerElement | null {
   if (typeof document === 'undefined') return null
+  const input = document.querySelector<HTMLElement>('[data-composer-input]')
+  if (input !== null) return input
   const column = document.querySelector('#root [data-slot="conversation"]')
-  const find = (scope: ParentNode): HTMLTextAreaElement | null =>
-    scope.querySelector('textarea[data-phase]') ?? scope.querySelector('textarea')
   return column !== null
-    ? find(column)
+    ? column.querySelector<HTMLTextAreaElement>('textarea[data-phase]')
     : document.querySelector<HTMLTextAreaElement>('textarea[data-phase]')
+}
+
+/**
+ * The draft offset of one point inside a contenteditable: the text before it,
+ * which is the draft itself while the composer holds no reference chip.
+ */
+function editableOffsetOf(el: HTMLElement, container: Node, offset: number): number {
+  const range = el.ownerDocument.createRange()
+  range.selectNodeContents(el)
+  range.setEnd(container, offset)
+  return range.toString().length
+}
+
+/**
+ * Place a collapsed caret at `offset` (draft coordinates) in a
+ * contenteditable, by walking its text nodes. A composer whose text no longer
+ * matches the draft is left alone by the caller.
+ */
+function placeEditableCaret(el: HTMLElement, offset: number): void {
+  const doc = el.ownerDocument
+  const walker = doc.createTreeWalker(el, NodeFilter.SHOW_TEXT)
+  let node = walker.nextNode()
+  let remaining = offset
+  while (node !== null) {
+    const length = node.textContent?.length ?? 0
+    if (remaining <= length) {
+      const range = doc.createRange()
+      range.setStart(node, remaining)
+      range.setEnd(node, remaining)
+      const selection = doc.getSelection()
+      if (selection === null) return
+      selection.removeAllRanges()
+      selection.addRange(range)
+      return
+    }
+    remaining -= length
+    node = walker.nextNode()
+  }
 }
 
 /**
@@ -112,13 +161,30 @@ function findComposerTextarea(): HTMLTextAreaElement | null {
  * hosts report null selectionStart/End).
  */
 export function probeComposerCaret(draft: string): DraftCaret | null {
-  const el = findComposerTextarea()
-  if (el === null || el.disabled || el.readOnly) return null
-  if (el.value !== draft) return null
-  let start = el.selectionStart
-  let end = el.selectionEnd
-  if (typeof start !== 'number' || typeof end !== 'number') return null
-  if (!Number.isFinite(start) || !Number.isFinite(end)) return null
+  const el = findComposerElement()
+  if (el === null) return null
+  if (el instanceof HTMLTextAreaElement) {
+    if (el.disabled || el.readOnly) return null
+    if (el.value !== draft) return null
+    let start = el.selectionStart
+    let end = el.selectionEnd
+    if (typeof start !== 'number' || typeof end !== 'number') return null
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return null
+    start = Math.max(0, Math.min(start, draft.length))
+    end = Math.max(start, Math.min(end, draft.length))
+    return { start, end }
+  }
+  // A contenteditable holding reference chips renders text the draft does not
+  // carry (the chip's label against its clipboard text), so only a composer
+  // whose text is the draft itself can be measured.
+  if (el.textContent !== draft) return null
+  const selection = el.ownerDocument.getSelection()
+  if (selection === null || selection.rangeCount === 0) return null
+  const range = selection.getRangeAt(0)
+  if (!el.contains(range.startContainer) || !el.contains(range.endContainer)) return null
+  let start = editableOffsetOf(el, range.startContainer, range.startOffset)
+  let end = editableOffsetOf(el, range.endContainer, range.endOffset)
+  if (start > end) [start, end] = [end, start]
   start = Math.max(0, Math.min(start, draft.length))
   end = Math.max(start, Math.min(end, draft.length))
   return { start, end }
@@ -147,16 +213,25 @@ export function placeComposerCaretAfterInsert(expectedDraft: string, caretIndex:
     scheduled = false
     if (remaining <= 0) return
     remaining -= 1
-    const el = findComposerTextarea()
-    if (el === null || el.disabled || el.readOnly) return
-    if (el.value !== expectedDraft) {
-      // The commit has not landed yet (or a competing edit won) — one more
-      // frame before giving up.
+    const el = findComposerElement()
+    if (el === null) return
+    if (el instanceof HTMLTextAreaElement) {
+      if (el.disabled || el.readOnly) return
+      if (el.value !== expectedDraft) {
+        // The commit has not landed yet (or a competing edit won) — one more
+        // frame before giving up.
+        schedule(place)
+        return
+      }
+      const clamped = Math.max(0, Math.min(caretIndex, el.value.length))
+      el.setSelectionRange(clamped, clamped)
+      return
+    }
+    if (el.textContent !== expectedDraft) {
       schedule(place)
       return
     }
-    const clamped = Math.max(0, Math.min(caretIndex, el.value.length))
-    el.setSelectionRange(clamped, clamped)
+    placeEditableCaret(el, Math.max(0, Math.min(caretIndex, expectedDraft.length)))
   }
   schedule(place)
 }

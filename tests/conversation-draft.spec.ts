@@ -247,3 +247,92 @@ describe('appendToDraft', () => {
     consoleWarn.mockRestore()
   })
 })
+/**
+ * The current host's composer is a Lexical contenteditable rather than the
+ * older textarea: the caret is read from the DOM selection inside it, its text
+ * is the draft while no reference chip is in it, and the caret is placed back
+ * by walking its text nodes.
+ */
+function mountEditableComposer(draft: string, caret: number): HTMLElement {
+  const root = document.createElement('div')
+  root.id = 'root'
+  const column = document.createElement('div')
+  column.setAttribute('data-slot', 'conversation')
+  const input = document.createElement('div')
+  input.setAttribute('data-composer-input', '')
+  input.setAttribute('contenteditable', 'true')
+  const paragraph = document.createElement('p')
+  paragraph.textContent = draft
+  input.append(paragraph)
+  column.append(input)
+  root.append(column)
+  document.body.append(root)
+  const node = paragraph.firstChild
+  if (node === null) throw new Error('mountEditableComposer: the draft has no text node')
+  const range = document.createRange()
+  range.setStart(node, caret)
+  range.setEnd(node, caret)
+  const selection = document.getSelection()
+  if (selection === null) throw new Error('mountEditableComposer: no selection')
+  selection.removeAllRanges()
+  selection.addRange(range)
+  return input
+}
+
+describe('probeComposerCaret on the contenteditable composer', () => {
+  it('reads the caret out of the composer DOM selection', () => {
+    mountEditableComposer('hello world', 5)
+    expect(probeComposerCaret('hello world')).toEqual({ start: 5, end: 5 })
+  })
+
+  it('reads a live selection range', () => {
+    const input = mountEditableComposer('hello world', 6)
+    const node = input.querySelector('p')?.firstChild
+    if (node === null || node === undefined) throw new Error('no text node')
+    const range = document.createRange()
+    range.setStart(node, 6)
+    range.setEnd(node, 11)
+    const selection = document.getSelection()
+    selection?.removeAllRanges()
+    selection?.addRange(range)
+    expect(probeComposerCaret('hello world')).toEqual({ start: 6, end: 11 })
+  })
+
+  it('returns null while the composer text is not the draft (a chip is in it)', () => {
+    mountEditableComposer('@引用内容 #1 and more', 3)
+    expect(probeComposerCaret('@ref-clipboard-text and more')).toBeNull()
+  })
+
+  it('returns null when the selection sits outside the composer', () => {
+    mountEditableComposer('hello world', 5)
+    const selection = document.getSelection()
+    selection?.removeAllRanges()
+    expect(probeComposerCaret('hello world')).toBeNull()
+  })
+
+  it('prefers the composer over an unrelated textarea in the column', () => {
+    const stray = mountComposer('hello world', 9, 9)
+    mountEditableComposer('hello world', 2)
+    expect(stray.selectionStart).toBe(9)
+    expect(probeComposerCaret('hello world')).toEqual({ start: 2, end: 2 })
+  })
+})
+
+describe('placeComposerCaretAfterInsert on the contenteditable composer', () => {
+  it('places the caret once the draft commit lands', async () => {
+    const input = mountEditableComposer('AB', 1)
+    placeComposerCaretAfterInsert('A C B', 3)
+    const paragraph = input.querySelector('p')
+    if (paragraph === null) throw new Error('no paragraph')
+    paragraph.textContent = 'A C B' // the setDraft commit lands
+    await tick()
+    expect(probeComposerCaret('A C B')).toEqual({ start: 3, end: 3 })
+  })
+
+  it('leaves a composer alone while its text still differs from the draft', async () => {
+    mountEditableComposer('OLD', 0)
+    placeComposerCaretAfterInsert('NEW TEXT', 2)
+    await tick()
+    expect(probeComposerCaret('OLD')).toEqual({ start: 0, end: 0 })
+  })
+})
