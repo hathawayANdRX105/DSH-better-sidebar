@@ -14,6 +14,7 @@
 - **修复选中行错位与异常边框**：整合提交图时误删了 Git 文件行与本轮操作行共用的选中声明，留下的选择器串到了缩进参考线规则，导致选中文件脱离分组。恢复原有主题背景与行内标记，不改变图谱高度或滚动结构；`tests/theme.spec.ts` 与真实挂载 `tests/e2e/git-layout.e2e.ts` 覆盖选中前后布局、暂存与未暂存同名文件、冲突行和窄侧栏。滚动状态保持测试默认使用独立临时仓库，避免复用旧目录。
 - **侧边对话从最近一次 summarizing compaction 起种**（贡献者 PR [#964](https://github.com/omdsh-dev/DSH-better-sidebar/pull/964) @NolanHo）：新子会话不再全量复制父日志，保留必要的事件结构与成组记录；新增真实宿主校验器回归。
 - 🧪 测试：新增 `tests/git-scm.spec.tsx` / `git-graph-ui.spec.tsx` / `graph-layout.spec.ts` / `changes-ops-route.spec.ts` / `e2e/git-graph.e2e.ts` / `e2e-aggregate-auth.spec.ts`，改写 `changes-tab.spec.tsx`（底部面板三签、图谱区在 Git 镜头内）、`git.spec.ts`（porcelain v2 状态与发现根归一）、`git-view-worktree.spec.tsx`（图页竞态）、`unbounded-caches.spec.ts`（长轮询契约）等 20 余份既有 spec；删除随内联图退场的 `git-graph.spec.tsx`。
+- 🐞 **适配 DSH 0.2.1-alpha 的 `webStartup` 服务线**：dsh 0.2.1-alpha 移除了 `webRuntime` 服务，导致本插件 host 端一直等待该服务而无法挂载，`/sidebar` 路由全部未注册——侧边栏点任何文件都返回 HTTP 405。现改为注入 `webStartup` 并读取 `ctx.webStartup.trustedHosts`；同步移除已退役的 `dsh-better-sidebar-invariant` companion 及其 `@deepseek-ai/dsh-invariants` peer 依赖。支持线由 0.2.0-rc.2+ 调整为 **0.2.1-alpha.1+**，两份 README 的兼容性表与全部 host 相关 spec 已同步更新。
 
 ### v0.26.1
 

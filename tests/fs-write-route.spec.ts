@@ -32,7 +32,7 @@ import type { SidebarWebRoute } from '../src/context-types.ts'
 import { removeTree } from './temp-tree.ts'
 
 interface FakeContext {
-  webRuntime: { trustedHosts: readonly string[] }
+  webStartup: { trustedHosts: readonly string[] }
   webServer: {
     register: (route: SidebarWebRoute) => () => void
     registerUpgrade: () => () => void
@@ -56,7 +56,7 @@ interface Mounted {
 function mountApi(workspace: string): Mounted {
   const routes: SidebarWebRoute[] = []
   const ctx: FakeContext = {
-    webRuntime: { trustedHosts: [] },
+    webStartup: { trustedHosts: [] },
     webServer: { register: (route) => { routes.push(route); return () => {} }, registerUpgrade: () => () => {} },
     sessions: { get: () => ({ header: { cwd: workspace } }) },
     tools: { register: () => () => {} },
